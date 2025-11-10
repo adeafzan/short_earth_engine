@@ -1,0 +1,118 @@
+//Shape file area of interest
+var aoi = ee.FeatureCollection(shpFaoGaul)
+  .filter(ee.Filter.eq("ADM2_NAME", 'Klaten'));
+print('AOI', aoi)
+Map.addLayer(aoi, {color: 'red'},'AOI')
+
+//Rentang waktu of interest
+var START = '2024-02-01', END = '2024-02-29';
+
+// Ambil citra Landsat 8 Surface Reflectant
+var col = ee.ImageCollection(landsat_sr)
+ .filterDate(START, END)
+ .filterBounds(aoi)
+ .filter(ee.Filter.lt('CLOUD_COVER', 90))
+
+//Tampilkan Element(feature)--liat di menu "Console"
+var image_sort = ee.Image(col.sort('DATE_ACQUIRED'))
+print('Jumlah Image dalam area dan waktu kajian', image_sort)
+
+// cek kosong atau tidak
+print('Jumlah citra:', col.size());            
+
+//Clip aoi
+var image = col.median()
+  .multiply(0.00002).add(-0.1)
+  .clip(aoi);
+
+// pastikan ada band
+print('Band img:', image.bandNames());   
+
+// Crop (clip) citra dengan boundary Karawang
+var image = image.clip(aoi);
+
+
+// Tampilkan hasil
+Map.addLayer(image, {min: 0, max: 0.3}, 'Klaten ALL');
+Map.addLayer(image, {bands: ['SR_B4', 'SR_B3', 'SR_B2'], min:0, max:0.3}, 'Klaten RGB');
+
+// Masking menggunakan QA_PIXEL
+function cmask(image){
+  var qa = image.select('QA_PIXEL');
+  var mask = qa.bitwiseAnd(1<< 3).eq(0)   // cloud
+           //.and(qa.bitwiseAnd(1<< 4).eq(0)) // shadow
+           .and(qa.bitwiseAnd(1<< 4).eq(0)) // cirrus
+           //.and(qa.bitwiseAnd(1<<5).eq(0)) // snow
+           //.and(image.select('QA_PIXEL').eq(0));
+  // skala ke reflektansi
+  return image.updateMask(mask)
+           
+}
+
+
+var landsat_cmask = ee.ImageCollection(landsat_sr)
+.filterDate(START, END)
+.filterBounds(aoi)
+.filter(ee.Filter.lt('CLOUD_COVER', 95))
+.map(cmask)
+.median()
+.clip(aoi)
+
+print('landsat cmask QA_PIXEL', landsat_cmask)
+Map.addLayer(landsat_cmask, {bands: ['SR_B4', 'SR_B3', 'SR_B2']}, 'Klaten cmask QA_PIXEL RGB');
+
+
+//Masking simpleComposite pada Image Collection Landsat Raw Scene
+var composite_raw = ee.Algorithms.Landsat.simpleComposite({
+  collection: ee.ImageCollection(landsat_raw).filterDate(START, END),
+  asFloat: true
+})
+print('composite raw', composite_raw)
+Map.addLayer(composite_raw.clip(aoi), {bands: ['B4', 'B3', 'B2']}, 'Klaten composite raw RGB');
+
+
+// Masking pada Sentinel 2 menggunakan QA60
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask).divide(10000);
+}
+
+var sentinel_2 = ee.ImageCollection(sentinel_2)
+.filterDate(START, END)
+.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE',90))
+//.map(maskS2clouds)
+.filterBounds(aoi)
+.median()
+.clip(aoi)
+
+
+var visualization = {
+  min: 0.0,
+  max: 10000,
+  bands: ['B4', 'B3', 'B2'],
+};
+
+print('sentinel 2', sentinel_2)
+
+Map.addLayer(sentinel_2, visualization, 'Klaten sentinel 2 cloud QA60 RGB');
+
+//Kita coba download citra landsat_cmask dengan bbrp pixel tidak terdefinisi
+// Export ke Google Drive (jangan lupa tuliskan CRS EPSG:4326)
+Export.image.toDrive({
+  image: composite_raw.clip(aoi),
+  description: 'landsat_composite_raw',
+  folder: 'landsat',
+  scale: 30,
+  region: aoi.geometry(),
+  maxPixels: 1e13
+});
+
